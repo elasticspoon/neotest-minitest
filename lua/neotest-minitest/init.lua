@@ -1,7 +1,7 @@
 local lib = require("neotest.lib")
 local logger = require("neotest.logging")
 local async = require("neotest.async")
-
+local config = require("neotest-rspec.config")
 local utils = require("neotest-minitest.utils")
 
 ---@class neotest.Adapter
@@ -13,7 +13,16 @@ local NeotestAdapter = { name = "neotest-minitest" }
 ---@async
 ---@param dir string @Directory to treat as cwd
 ---@return string | nil @Absolute root dir of test suite
-NeotestAdapter.root = lib.files.match_root_pattern("Gemfile", ".gitignore")
+function NeotestAdapter.root(dir)
+  local result = nil
+
+  for _, root_file in ipairs(config.get_root_files()) do
+    result = lib.files.match_root_pattern(root_file)(dir)
+    if result then break end
+  end
+
+  return result
+end
 
 ---@async
 ---@param file_path string
@@ -29,6 +38,10 @@ end
 ---@param root string Root directory of project
 ---@return boolean
 function NeotestAdapter.filter_dir(name, rel_path, root)
+  for _, filter_dir in ipairs(config.get_filter_dirs()) do
+    if name == filter_dir then return false end
+  end
+
   local _, count = rel_path:gsub("/", "")
   if rel_path:match("test") or count < 1 then return true end
   return false
@@ -44,7 +57,8 @@ function NeotestAdapter.discover_positions(file_path)
     ((
       class
       name: (constant) @namespace.name
-      (superclass (scope_resolution) @superclass (#match? @superclass "^Minitest::Test"))
+      (superclass (scope_resolution) @superclass (#match? @superclass 
+      "^(Minitest::Test|MiniTest::Test)"))
     )) @namespace.definition
 
     ; Methods that begin with test_
@@ -106,15 +120,8 @@ function NeotestAdapter.build_spec(args)
 
   if position.type == "dir" then return run_dir() end
 
-  local ruby_cmd = vim.tbl_flatten({
-    "bundle",
-    "exec",
-    "ruby",
-    "-Itest",
-  })
-
   local command = vim.tbl_flatten({
-    ruby_cmd,
+    config.get_test_cmd(),
     script_args,
     "-v",
   })
@@ -179,4 +186,34 @@ function NeotestAdapter.results(spec, result, tree)
   return results
 end
 
+local is_callable = function(obj)
+  return type(obj) == "function" or (type(obj) == "table" and obj.__call)
+end
+
+setmetatable(NeotestAdapter, {
+  __call = function(_, opts)
+    if is_callable(opts.test_cmd) then
+      config.get_test_cmd = opts.test_cmd
+    elseif opts.test_cmd then
+      config.get_test_cmd = function()
+        return opts.test_cmd
+      end
+    end
+    if is_callable(opts.root_files) then
+      config.get_root_files = opts.root_files
+    elseif opts.root_files then
+      config.get_root_files = function()
+        return opts.root_files
+      end
+    end
+    if is_callable(opts.filter_dirs) then
+      config.get_filter_dirs = opts.filter_dirs
+    elseif opts.filter_dirs then
+      config.get_filter_dirs = function()
+        return opts.filter_dirs
+      end
+    end
+    return NeotestAdapter
+  end,
+})
 return NeotestAdapter
